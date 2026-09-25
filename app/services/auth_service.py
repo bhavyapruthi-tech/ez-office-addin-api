@@ -1,4 +1,3 @@
-import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -11,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import UnauthorizedError
+from app.core.security import hash_token
 from app.models.session import Session
 from app.models.user import User
 from app.services.workspace_client import WorkspaceClient
@@ -71,10 +71,6 @@ def exchange_obo(token: str, claims: dict[str, Any]) -> str:
     return str(result["access_token"])
 
 
-def _hash_token(raw_token: str) -> str:
-    return hashlib.sha256(raw_token.encode()).hexdigest()
-
-
 async def handle_auth_session(
     token: str,
     auth_mode: str,
@@ -121,7 +117,7 @@ async def handle_auth_session(
     raw_token = secrets.token_urlsafe(32)
     session = Session(
         user_id=user.id,
-        token_hash=_hash_token(raw_token),
+        token_hash=hash_token(raw_token),
         expires_at=datetime.now(UTC) + SESSION_TTL,
     )
     db.add(session)

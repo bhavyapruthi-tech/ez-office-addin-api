@@ -1,4 +1,3 @@
-import hashlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
@@ -8,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import UnauthorizedError
+from app.core.security import hash_token
 from app.models.session import Session
 from app.models.user import User
 
@@ -17,17 +17,13 @@ async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
 
 
-def _hash_token(raw_token: str) -> str:
-    return hashlib.sha256(raw_token.encode()).hexdigest()
-
-
 async def _load_session_and_user(
     authorization: str | None, db: AsyncSession, *, allow_expired: bool
 ) -> tuple[Session, User]:
     if not authorization or not authorization.startswith("Bearer "):
         raise UnauthorizedError()
     raw_token = authorization.removeprefix("Bearer ")
-    token_hash = _hash_token(raw_token)
+    token_hash = hash_token(raw_token)
 
     result = await db.execute(select(Session).where(Session.token_hash == token_hash))
     session = result.scalar_one_or_none()

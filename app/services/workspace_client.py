@@ -16,8 +16,20 @@ class WorkspaceClient:
         self._base_url = base_url or settings.workspace_api_base
         self._api_key = api_key or settings.workspace_api_key
 
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._api_key}"}
+    async def _request(
+        self, method: str, path: str, *, json: dict[str, Any], timeout: float
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(
+            base_url=self._base_url, timeout=timeout
+        ) as client:
+            response = await client.request(
+                method,
+                path,
+                json=json,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+            )
+            response.raise_for_status()
+            return response.json()
 
     async def lookup_or_login_or_create(
         self, work_email: str, ms_oid: str
@@ -25,22 +37,18 @@ class WorkspaceClient:
         # KD1: 15-second timeout -- long enough for a real provisioning
         # call, short enough that a degraded Workspace doesn't hold
         # request-handling capacity open indefinitely.
-        async with httpx.AsyncClient(
-            base_url=self._base_url,
+        return await self._request(
+            "POST",
+            "/accounts",
+            json={"work_email": work_email, "ms_oid": ms_oid},
             timeout=settings.workspace_provisioning_timeout_seconds,
-        ) as client:
-            response = await client.post(
-                "/accounts",
-                json={"work_email": work_email, "ms_oid": ms_oid},
-                headers=self._headers(),
-            )
-            response.raise_for_status()
-            return response.json()
+        )
 
     async def get_balance(self, wallet_id: str) -> int:
         async with httpx.AsyncClient(base_url=self._base_url, timeout=10.0) as client:
             response = await client.get(
-                f"/wallet/{wallet_id}/balance", headers=self._headers()
+                f"/wallet/{wallet_id}/balance",
+                headers={"Authorization": f"Bearer {self._api_key}"},
             )
             response.raise_for_status()
             return int(response.json()["credit_balance"])
@@ -48,18 +56,16 @@ class WorkspaceClient:
     async def debit(
         self, wallet_id: str, amount: int, idempotency_key: str, reason: str = "job"
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(base_url=self._base_url, timeout=10.0) as client:
-            response = await client.post(
-                f"/wallet/{wallet_id}/debit",
-                json={
-                    "amount": amount,
-                    "idempotency_key": idempotency_key,
-                    "reason": reason,
-                },
-                headers=self._headers(),
-            )
-            response.raise_for_status()
-            return response.json()
+        return await self._request(
+            "POST",
+            f"/wallet/{wallet_id}/debit",
+            json={
+                "amount": amount,
+                "idempotency_key": idempotency_key,
+                "reason": reason,
+            },
+            timeout=10.0,
+        )
 
     async def credit(
         self,
@@ -68,18 +74,16 @@ class WorkspaceClient:
         idempotency_key: str,
         reason: Literal["topup", "refund"] = "topup",
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(base_url=self._base_url, timeout=10.0) as client:
-            response = await client.post(
-                f"/wallet/{wallet_id}/credit",
-                json={
-                    "amount": amount,
-                    "idempotency_key": idempotency_key,
-                    "reason": reason,
-                },
-                headers=self._headers(),
-            )
-            response.raise_for_status()
-            return response.json()
+        return await self._request(
+            "POST",
+            f"/wallet/{wallet_id}/credit",
+            json={
+                "amount": amount,
+                "idempotency_key": idempotency_key,
+                "reason": reason,
+            },
+            timeout=10.0,
+        )
 
     async def find_debit_by_idempotency_key(
         self, wallet_id: str, idempotency_key: str
@@ -92,19 +96,13 @@ class WorkspaceClient:
         is implemented as a defensive re-call rather than a separate
         lookup endpoint the contract doesn't otherwise need.
         """
-        async with httpx.AsyncClient(base_url=self._base_url, timeout=10.0) as client:
-            response = await client.post(
-                f"/wallet/{wallet_id}/debit",
-                json={
-                    "amount": 0,
-                    "idempotency_key": idempotency_key,
-                    "reason": "job",
-                },
-                headers=self._headers(),
-            )
-            response.raise_for_status()
-            body: dict[str, Any] = response.json()
-            return body if body.get("status") == "ok" else None
+        body = await self._request(
+            "POST",
+            f"/wallet/{wallet_id}/debit",
+            json={"amount": 0, "idempotency_key": idempotency_key, "reason": "job"},
+            timeout=10.0,
+        )
+        return body if body.get("status") == "ok" else None
 
 
 workspace_client = WorkspaceClient()

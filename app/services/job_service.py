@@ -13,6 +13,11 @@ from app.models.tool_job import (
     ERROR_CODE_INSUFFICIENT_BALANCE_AFTER_SPEND,
     ERROR_CODE_STALE_TIMEOUT,
     ERROR_CODE_WORKSPACE_UNREACHABLE,
+    STATUS_DONE,
+    STATUS_FAILED,
+    STATUS_PARTIAL_FAILED,
+    STATUS_PROCESSING,
+    STATUS_QUEUED,
     ToolJob,
 )
 from app.models.user import User
@@ -95,7 +100,7 @@ async def get_or_create_job(
         idempotency_key=idempotency_key,
         input_file_meta=input_file_meta,
         expert_review_requested=expert_review_requested,
-        status="queued",
+        status=STATUS_QUEUED,
     )
     db.add(job)
     try:
@@ -172,11 +177,11 @@ async def _run(
         # sweep may have already closed this row out while the (slow)
         # upstream calls above were in flight. Whichever writer reaches
         # "processing -> terminal" first wins; the loser never debits.
-        if job.status not in ("queued", "processing"):
+        if job.status not in (STATUS_QUEUED, STATUS_PROCESSING):
             return
 
         if both_failed or single_op_failed:
-            job.status = "failed"
+            job.status = STATUS_FAILED
             job.error_code = ERROR_CODE_WORKSPACE_UNREACHABLE
             job.completed_at = datetime.now(UTC)
             await db.commit()
@@ -185,7 +190,7 @@ async def _run(
         word_count = translate_result.get("word_count") if translate_result else None
 
         if operation == "both" and (flip_failed != translate_failed):
-            pending_status = "partial_failed"
+            pending_status = STATUS_PARTIAL_FAILED
             failed_operation = "flip" if flip_failed else "translate"
             succeeded_operation = "translate" if flip_failed else "flip"
             cost = estimate_credits_cost(succeeded_operation, word_count)
@@ -194,7 +199,7 @@ async def _run(
             else:
                 result_base64 = flip_result.get("file_base64")  # type: ignore[union-attr]
         else:
-            pending_status = "done"
+            pending_status = STATUS_DONE
             failed_operation = None
             cost = estimate_credits_cost(operation, word_count)
             result_base64 = (
@@ -220,16 +225,16 @@ async def _run(
             job.result_file_url = result_base64
             job.completed_at = datetime.now(UTC)
             if job.expert_review_requested and pending_status in (
-                "done",
-                "partial_failed",
+                STATUS_DONE,
+                STATUS_PARTIAL_FAILED,
             ):
                 job.localization_ref = generate_ref()
         elif debit_result.get("status") == "insufficient_balance":
-            job.status = "failed"
+            job.status = STATUS_FAILED
             job.error_code = ERROR_CODE_INSUFFICIENT_BALANCE_AFTER_SPEND
             job.completed_at = datetime.now(UTC)
         else:
-            job.status = "failed"
+            job.status = STATUS_FAILED
             job.error_code = ERROR_CODE_WORKSPACE_UNREACHABLE
             job.completed_at = datetime.now(UTC)
 
@@ -250,27 +255,41 @@ async def run_stale_job_sweep(
     async with sessionmaker() as db:
         result = await db.execute(
             select(ToolJob).where(
-                ToolJob.status.in_(["queued", "processing"]),
+                ToolJob.status.in_([STATUS_QUEUED, STATUS_PROCESSING]),
                 ToolJob.created_at < cutoff,
             )
         )
         stale_jobs = result.scalars().all()
 
+        # Resolve wallet ids first, sequentially -- these share the one
+        # AsyncSession, which cannot serve concurrent operations.
+        wallet_ids: list[str | None] = []
         for job in stale_jobs:
             user = await db.get(User, job.user_id)
-            wallet_id = user.ez_wallet_id if user else None
-            matching_debit = None
-            if wallet_id:
-                try:
-                    matching_debit = (
-                        await workspace_client.find_debit_by_idempotency_key(
-                            wallet_id, str(job.id)
-                        )
-                    )
-                except Exception:
-                    logger.exception("sweep: debit lookup failed for job %s", job.id)
+            wallet_ids.append(user.ez_wallet_id if user else None)
 
-            job.status = "failed"
+        async def _lookup(job: ToolJob, wallet_id: str | None) -> dict[str, Any] | None:
+            if not wallet_id:
+                return None
+            try:
+                return await workspace_client.find_debit_by_idempotency_key(
+                    wallet_id, str(job.id)
+                )
+            except Exception:
+                logger.exception("sweep: debit lookup failed for job %s", job.id)
+                return None
+
+        # Independent per-job Workspace HTTP calls -- run concurrently
+        # rather than one round-trip at a time. No DB session access here.
+        matching_debits = await asyncio.gather(
+            *(
+                _lookup(job, wallet_id)
+                for job, wallet_id in zip(stale_jobs, wallet_ids, strict=True)
+            )
+        )
+
+        for job, matching_debit in zip(stale_jobs, matching_debits, strict=True):
+            job.status = STATUS_FAILED
             job.error_code = (
                 ERROR_CODE_DEBIT_SUCCEEDED_STATUS_WRITE_FAILED
                 if matching_debit is not None

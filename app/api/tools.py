@@ -18,16 +18,6 @@ from app.services.workspace_client import workspace_client
 
 router = APIRouter()
 
-# ARCHITECTURE.md sec02 example costs, used as the pre-flight estimate.
-FLIP_ESTIMATE = 12
-TRANSLATE_ESTIMATE = 8
-BOTH_ESTIMATE = 18
-_ESTIMATES = {
-    "flip": FLIP_ESTIMATE,
-    "translate": TRANSLATE_ESTIMATE,
-    "both": BOTH_ESTIMATE,
-}
-
 
 @router.post("/tools/jobs", response_model=SubmitJobResponse)
 async def submit_job(
@@ -63,7 +53,9 @@ async def submit_job(
         return SubmitJobResponse(job_id=str(job.id), status=job.status)  # type: ignore[arg-type]
 
     # R9: pre-flight balance check, after dedup, before any upstream call.
-    estimate = _ESTIMATES[body.operation]
+    # Uses the same formula as final billing (job_service.estimate_credits_cost)
+    # so the estimate and the actual charge never silently diverge.
+    estimate = job_service.estimate_credits_cost(body.operation)
     balance = await workspace_client.get_balance(user.ez_wallet_id)
     if balance < estimate:
         await db.rollback()

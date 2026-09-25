@@ -15,6 +15,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
 
+# R10-R13: the five values `status` may carry.
+STATUS_QUEUED = "queued"
+STATUS_PROCESSING = "processing"
+STATUS_DONE = "done"
+STATUS_PARTIAL_FAILED = "partial_failed"
+STATUS_FAILED = "failed"
+
 # R11/KD8: the four error_code values a `failed` job may carry.
 ERROR_CODE_INSUFFICIENT_BALANCE_AFTER_SPEND = "insufficient_balance_after_spend"
 ERROR_CODE_WORKSPACE_UNREACHABLE = "workspace_unreachable"
