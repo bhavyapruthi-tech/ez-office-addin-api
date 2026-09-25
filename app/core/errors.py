@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 
@@ -60,6 +61,21 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=_error_body(exc.error_code, exc.message),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(
+        _request: Request, _exc: RequestValidationError
+    ) -> JSONResponse:
+        # FastAPI/Pydantic request-body validation errors bypass AppError,
+        # so they need their own handler to stay inside the shared envelope
+        # (R15) instead of falling through to FastAPI's default
+        # {"detail": [...]} body.
+        return JSONResponse(
+            status_code=422,
+            content=_error_body(
+                "validation_error", "The request could not be validated."
+            ),
         )
 
     @app.exception_handler(Exception)

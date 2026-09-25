@@ -78,8 +78,9 @@ async def handle_auth_session(
     workspace_client: WorkspaceClient,
 ) -> tuple[User, str]:
     """R1/R2: both auth_mode paths converge on the same users row
-    creation + session issuance + (first-use-only) Workspace
-    provisioning. Returns (user, raw_session_token).
+    creation + session issuance + Workspace provisioning (retried on
+    every call until the user's status is "active", per R4/KD4).
+    Returns (user, raw_session_token).
     """
     claims = validate_entra_token(token)
 
@@ -99,7 +100,12 @@ async def handle_auth_session(
         db.add(user)
         await db.flush()
 
-    if first_use:
+    # R4/KD4: retry provisioning on every call until it succeeds, not just
+    # on the user's very first-ever call -- otherwise a user whose first
+    # Workspace attempt fails is stuck "unprovisioned" forever, since
+    # `first_use` alone is never True again for them.
+    needs_provisioning = first_use or user.workspace_account_status != "active"
+    if needs_provisioning:
         try:
             provisioned = await workspace_client.lookup_or_login_or_create(
                 work_email, ms_oid

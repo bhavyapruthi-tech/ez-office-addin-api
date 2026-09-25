@@ -140,3 +140,39 @@ async def test_handle_auth_session_workspace_timeout_stays_unprovisioned(
 
     assert user.workspace_account_status == "unprovisioned"
     assert raw_token  # R1: session still succeeds even when Workspace fails
+
+
+@pytest.mark.anyio
+async def test_handle_auth_session_retries_provisioning_on_next_call(
+    make_entra_token, db_session
+):
+    """R4/KD4: a user stuck at workspace_account_status="unprovisioned"
+    after a failed first attempt must have provisioning re-attempted on
+    their next /auth/session call, not just on their literal first-ever
+    call.
+    """
+    token = make_entra_token()
+    workspace_client = AsyncMock()
+    workspace_client.lookup_or_login_or_create.side_effect = TimeoutError()
+
+    user, _raw_token = await auth_service.handle_auth_session(
+        token, "naa", db_session, workspace_client
+    )
+    assert user.workspace_account_status == "unprovisioned"
+
+    workspace_client.lookup_or_login_or_create.side_effect = None
+    workspace_client.lookup_or_login_or_create.return_value = {
+        "workspace_account_id": "wsacct-1",
+        "wallet_id": "wallet-1",
+        "credit_balance": 0,
+        "status": "created",
+    }
+
+    user, raw_token = await auth_service.handle_auth_session(
+        token, "naa", db_session, workspace_client
+    )
+
+    assert user.workspace_account_status == "active"
+    assert user.ez_wallet_id == "wallet-1"
+    assert raw_token
+    assert workspace_client.lookup_or_login_or_create.await_count == 2

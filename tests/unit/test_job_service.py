@@ -178,6 +178,80 @@ async def test_run_expert_review_populates_localization_ref(
 
 
 @pytest.mark.anyio
+async def test_run_single_op_upstream_failure_marks_workspace_unreachable_no_debit(
+    db_session, db_engine, monkeypatch
+):
+    """P0 #1: when the sole upstream call for a single-operation job raises,
+    the job must be marked failed/workspace_unreachable and never reach the
+    debit call -- not silently fall through into the done-completion path."""
+    user = await _make_user(db_session)
+    job = ToolJob(
+        user_id=user.id,
+        operation="flip",
+        idempotency_key="k-flip-raises",
+        input_file_meta={"direction": "rtl"},
+        status="queued",
+    )
+    db_session.add(job)
+    await db_session.commit()
+    job_id = job.id
+
+    monkeypatch.setattr(
+        job_service.flip_client,
+        "flip",
+        AsyncMock(side_effect=RuntimeError("upstream down")),
+    )
+    workspace_client = AsyncMock()
+    sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    await job_service._run(job_id, "orig", sessionmaker, workspace_client)
+
+    reloaded = await _reload(db_engine, job_id)
+    assert reloaded.status == "failed"
+    assert reloaded.error_code == "workspace_unreachable"
+    workspace_client.debit.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_run_both_operation_both_upstream_calls_fail_marks_workspace_unreachable(
+    db_session, db_engine, monkeypatch
+):
+    """P0 #1: when BOTH upstream calls for a "both" job raise, the job must
+    be marked failed/workspace_unreachable and never reach the debit call."""
+    user = await _make_user(db_session)
+    job = ToolJob(
+        user_id=user.id,
+        operation="both",
+        idempotency_key="k-both-raise",
+        input_file_meta={"direction": "rtl", "lang_from": "en", "lang_to": "ar"},
+        status="queued",
+    )
+    db_session.add(job)
+    await db_session.commit()
+    job_id = job.id
+
+    monkeypatch.setattr(
+        job_service.flip_client,
+        "flip",
+        AsyncMock(side_effect=RuntimeError("flip upstream down")),
+    )
+    monkeypatch.setattr(
+        job_service.translate_client,
+        "translate",
+        AsyncMock(side_effect=RuntimeError("translate upstream down")),
+    )
+    workspace_client = AsyncMock()
+    sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    await job_service._run(job_id, "orig", sessionmaker, workspace_client)
+
+    reloaded = await _reload(db_engine, job_id)
+    assert reloaded.status == "failed"
+    assert reloaded.error_code == "workspace_unreachable"
+    workspace_client.debit.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_run_both_operation_translate_fails_marks_partial_failed(
     db_session, db_engine, monkeypatch
 ):
@@ -217,6 +291,61 @@ async def test_run_both_operation_translate_fails_marks_partial_failed(
     workspace_client.debit.assert_awaited_once_with(
         "wallet-1",
         job_service.FLIP_COST_CREDITS,
+        idempotency_key=str(job_id),
+        reason="job",
+    )
+
+
+@pytest.mark.anyio
+async def test_run_both_operation_flip_fails_marks_partial_failed(
+    db_session, db_engine, monkeypatch
+):
+    """Mirror of test_run_both_operation_translate_fails_marks_partial_failed:
+    flip raises, translate succeeds. Exercises the `if flip_failed:` branch
+    of the result/cost selector (P1 #4) -- the previously-untested arm."""
+    user = await _make_user(db_session)
+    job = ToolJob(
+        user_id=user.id,
+        operation="both",
+        idempotency_key="k-both-flip-fails",
+        input_file_meta={"direction": "rtl", "lang_from": "en", "lang_to": "ar"},
+        status="queued",
+    )
+    db_session.add(job)
+    await db_session.commit()
+    job_id = job.id
+
+    monkeypatch.setattr(
+        job_service.flip_client,
+        "flip",
+        AsyncMock(side_effect=RuntimeError("flip upstream down")),
+    )
+    monkeypatch.setattr(
+        job_service.translate_client,
+        "translate",
+        AsyncMock(
+            return_value={
+                "file_base64": "translated-only",
+                "status": "done",
+                "word_count": 2000,
+            }
+        ),
+    )
+    workspace_client = AsyncMock()
+    workspace_client.debit.return_value = {"status": "ok"}
+    sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    await job_service._run(job_id, "orig", sessionmaker, workspace_client)
+
+    expected_cost = job_service.estimate_credits_cost("translate", 2000)
+    reloaded = await _reload(db_engine, job_id)
+    assert reloaded.status == "partial_failed"
+    assert reloaded.failed_operation == "flip"
+    assert reloaded.credits_cost == expected_cost
+    assert reloaded.result_file_url == "translated-only"
+    workspace_client.debit.assert_awaited_once_with(
+        "wallet-1",
+        expected_cost,
         idempotency_key=str(job_id),
         reason="job",
     )
@@ -298,6 +427,41 @@ async def test_run_debit_timeout_marks_workspace_unreachable_resubmit_safe(
             expert_review_requested=False,
         )
         assert created2 is False
+
+
+@pytest.mark.anyio
+async def test_run_no_wallet_id_skips_debit_marks_workspace_unreachable(
+    db_session, db_engine, monkeypatch
+):
+    """P1 #5: when the owning user has no ez_wallet_id, the `if wallet_id:`
+    guard must skip the debit call entirely rather than call it with a
+    falsy wallet id, and the job must still resolve to a terminal failure."""
+    user = await _make_user(db_session, wallet_id=None)
+    job = ToolJob(
+        user_id=user.id,
+        operation="flip",
+        idempotency_key="k-no-wallet",
+        input_file_meta={"direction": "rtl"},
+        status="queued",
+    )
+    db_session.add(job)
+    await db_session.commit()
+    job_id = job.id
+
+    monkeypatch.setattr(
+        job_service.flip_client,
+        "flip",
+        AsyncMock(return_value={"file_base64": "x", "status": "done"}),
+    )
+    workspace_client = AsyncMock()
+    sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    await job_service._run(job_id, "orig", sessionmaker, workspace_client)
+
+    workspace_client.debit.assert_not_awaited()
+    reloaded = await _reload(db_engine, job_id)
+    assert reloaded.status == "failed"
+    assert reloaded.error_code == "workspace_unreachable"
 
 
 @pytest.mark.anyio
@@ -397,3 +561,54 @@ async def test_sweep_marks_stale_row_with_matching_debit_as_status_write_failed(
     reloaded = await _reload(db_engine, job_id)
     assert reloaded.status == "failed"
     assert reloaded.error_code == "debit_succeeded_status_write_failed"
+
+
+@pytest.mark.anyio
+async def test_sweep_does_not_clobber_row_completed_done_during_lookup_gather(
+    db_session, db_engine, monkeypatch
+):
+    """P0 #2, reverse-race direction of
+    test_run_aborts_without_debit_if_sweep_already_closed_row: the sweep
+    snapshots a stale row via its initial SELECT, then -- while its
+    concurrent Workspace lookups (asyncio.gather) are in flight -- a
+    same-row _run task reaches its own Phase 3 re-check, finds the row
+    still processing, successfully debits, and commits STATUS_DONE. The
+    sweep's final write must re-check current status and must NOT overwrite
+    that terminal DONE outcome back to failed/stale_timeout."""
+    user = await _make_user(db_session)
+    old_job = ToolJob(
+        user_id=user.id,
+        operation="flip",
+        idempotency_key="k-reverse-race",
+        input_file_meta={"direction": "rtl"},
+        status="processing",
+        created_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+    db_session.add(old_job)
+    await db_session.commit()
+    job_id = old_job.id
+
+    async def slow_lookup(*args, **kwargs):
+        # While the sweep's Workspace round-trip is in flight, a concurrent
+        # _run task for this same row reaches Phase 3, debits, and commits
+        # STATUS_DONE.
+        monkeypatch.setattr(
+            job_service.flip_client,
+            "flip",
+            AsyncMock(return_value={"file_base64": "flipped", "status": "done"}),
+        )
+        run_workspace_client = AsyncMock()
+        run_workspace_client.debit.return_value = {"status": "ok"}
+        run_sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
+        await job_service._run(job_id, "orig", run_sessionmaker, run_workspace_client)
+        return None
+
+    workspace_client = AsyncMock()
+    workspace_client.find_debit_by_idempotency_key.side_effect = slow_lookup
+    sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    await job_service.run_stale_job_sweep(sessionmaker, workspace_client)
+
+    reloaded = await _reload(db_engine, job_id)
+    assert reloaded.status == "done"  # untouched by the sweep's final write
+    assert reloaded.result_file_url == "flipped"

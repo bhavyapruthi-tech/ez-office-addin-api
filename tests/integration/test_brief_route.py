@@ -68,3 +68,6 @@ async def test_submit_brief_missing_division_returns_422(app_and_token):
         )
 
     assert response.status_code == 422
+    body = response.json()
+    assert body["error_code"] == "validation_error"
+    assert isinstance(body["message"], str) and body["message"]

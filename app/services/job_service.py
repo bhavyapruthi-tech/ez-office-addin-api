@@ -288,7 +288,28 @@ async def run_stale_job_sweep(
             )
         )
 
+        # Re-check current status immediately before mutating -- an in-flight
+        # _run task for one of these same rows may have reached its own
+        # Phase 3 re-check (KD6) and already written a terminal status while
+        # the (slow) Workspace lookups above were in flight. `populate_existing`
+        # forces a true re-read from the DB rather than returning the stale
+        # identity-mapped instances already held in `stale_jobs`; only rows
+        # still queued/processing are safe for the sweep to close out.
+        stale_ids = [job.id for job in stale_jobs]
+        recheck_result = await db.execute(
+            select(ToolJob)
+            .where(ToolJob.id.in_(stale_ids))
+            .execution_options(populate_existing=True)
+        )
+        still_stale_ids = {
+            job.id
+            for job in recheck_result.scalars().all()
+            if job.status in (STATUS_QUEUED, STATUS_PROCESSING)
+        }
+
         for job, matching_debit in zip(stale_jobs, matching_debits, strict=True):
+            if job.id not in still_stale_ids:
+                continue
             job.status = STATUS_FAILED
             job.error_code = (
                 ERROR_CODE_DEBIT_SUCCEEDED_STATUS_WRITE_FAILED

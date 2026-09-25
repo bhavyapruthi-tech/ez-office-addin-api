@@ -35,6 +35,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
+            nullable=False,
             server_default=sa.text("now()"),
         ),
         sa.UniqueConstraint("work_email", name="uq_users_work_email"),
@@ -91,6 +92,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
+            nullable=False,
             server_default=sa.text("now()"),
         ),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
@@ -121,6 +123,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
+            nullable=False,
             server_default=sa.text("now()"),
         ),
         sa.UniqueConstraint("ref_number", name="uq_briefs_ref_number"),
@@ -135,6 +138,7 @@ def upgrade() -> None:
         sa.Column(
             "processed_at",
             sa.DateTime(timezone=True),
+            nullable=False,
             server_default=sa.text("now()"),
         ),
     )
