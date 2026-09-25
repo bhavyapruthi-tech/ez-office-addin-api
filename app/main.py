@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.auth import router as auth_router
+from app.api.brief import router as brief_router
 from app.api.tools import router as tools_router
 from app.api.wallet import router as wallet_router
 from app.api.webhooks import router as webhooks_router
@@ -50,6 +51,7 @@ def create_app() -> FastAPI:
     app.include_router(wallet_router)
     app.include_router(webhooks_router)
     app.include_router(tools_router)
+    app.include_router(brief_router)
 
     return app
 
