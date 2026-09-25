@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.api.auth import router as auth_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 
@@ -31,6 +32,7 @@ def create_app() -> FastAPI:
     )
 
     register_exception_handlers(app)
+    app.include_router(auth_router)
 
     return app
 

@@ -1,8 +1,16 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -21,10 +29,10 @@ class ToolJob(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), index=True
+        Uuid(as_uuid=True), ForeignKey("users.id"), index=True
     )
     operation: Mapped[str] = mapped_column(String)  # flip | translate | both
     status: Mapped[str] = mapped_column(
@@ -45,6 +53,6 @@ class ToolJob(Base):
     credits_cost: Mapped[int | None] = mapped_column(Integer)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default="now()", index=True
+        DateTime(timezone=True), server_default=func.now(), index=True
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -34,6 +34,18 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "C4"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's DI system requires Depends()/Header()/Query()/etc. as argument
+# defaults -- this is the framework's idiomatic pattern, not the mutable-
+# default-argument bug B008 otherwise catches.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Header",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+]
+
 [tool.ruff.format]
 quote-style = "double"
 
