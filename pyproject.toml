@@ -1,0 +1,55 @@
+[project]
+name = "ez-office-addin-backend"
+version = "0.1.0"
+description = "EZ Office Add-in backend (FastAPI) -- auth, wallet, tools jobs, brief"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.34.0",
+    "pydantic==2.13.5",
+    "pydantic-settings==2.7.1",
+    "sqlalchemy[asyncio]==2.0.54",
+    "asyncpg==0.31.0",
+    "alembic==1.20.0",
+    "stripe==15.6.1",
+    "msal==1.39.0",
+    "pyjwt[crypto]==2.15.0",
+    "httpx==0.28.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff==0.16.8",
+    "mypy==1.14.1",
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.2",
+    "respx==0.22.0",
+    "aiosqlite==0.20.0",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "C4"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+plugins = ["pydantic.mypy"]
+python_version = "3.12"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
