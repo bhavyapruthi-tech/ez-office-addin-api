@@ -63,6 +63,26 @@ async def test_typed_exceptions_return_shared_envelope(name, status, error_code)
 
 
 @pytest.mark.anyio
+async def test_request_validation_error_returns_shared_envelope():
+    app = _test_app()
+
+    @app.post("/_test/validate")
+    async def _validate(payload: dict[str, str]):  # noqa: ARG001
+        return {"ok": True}
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/_test/validate", content=b"not json")
+    assert response.status_code == 422
+    body = response.json()
+    assert body == {
+        "error_code": "validation_error",
+        "message": "The request could not be validated.",
+    }
+
+
+@pytest.mark.anyio
 async def test_unrecognized_exception_returns_well_formed_envelope_no_leak():
     # Starlette's ServerErrorMiddleware sends the handler's response to the
     # client, then re-raises the original exception for server-side
