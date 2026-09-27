@@ -108,6 +108,204 @@ async def test_get_or_create_job_concurrent_submits_yield_one_row(
 
 
 @pytest.mark.anyio
+async def test_get_or_create_job_sets_step_received_on_creation(db_session):
+    user = await _make_user(db_session)
+    job, created = await job_service.get_or_create_job(
+        db_session,
+        user_id=user.id,
+        operation="flip",
+        idempotency_key="key-step",
+        input_file_meta={},
+        expert_review_requested=False,
+    )
+    assert created is True
+    assert job.step == "received"
+
+
+@pytest.mark.anyio
+async def test_run_flip_writes_applying_rtl_step_before_calling_flip(
+    db_session, db_engine, monkeypatch
+):
+    """Code-review finding #9: step must actually reach the DB before the
+    upstream call starts, not just get set on the in-memory object -- read
+    it back from a separate session while flip is "in flight" to prove the
+    write already landed."""
+    user = await _make_user(db_session)
+    job = ToolJob(
+        user_id=user.id,
+        operation="flip",
+        idempotency_key="k-step-flip",
+        input_file_meta={"direction": "rtl"},
+        status="queued",
+    )
+    db_session.add(job)
+    await db_session.commit()
+    job_id = job.id
+
+    observed_step = None
+
+    async def observing_flip(*args, **kwargs):
+        nonlocal observed_step
+        observed_step = (await _reload(db_engine, job_id)).step
+        return {"file_base64": "x", "status": "done"}
+
+    monkeypatch.setattr(job_service.flip_client, "flip", observing_flip)
+    workspace_client = AsyncMock()
+    workspace_client.debit.return_value = {"status": "ok"}
+    sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    await job_service._run(job_id, "orig", sessionmaker, workspace_client)
+
+    assert observed_step == "applying_rtl"
+
+
+@pytest.mark.anyio
+async def test_run_translate_only_never_writes_applying_rtl_step(
+    db_session, db_engine, monkeypatch
+):
+    user = await _make_user(db_session)
+    job = ToolJob(
+        user_id=user.id,
+        operation="translate",
+        idempotency_key="k-step-translate",
+        input_file_meta={"lang_from": "en", "lang_to": "ar"},
+        status="queued",
+    )
+    db_session.add(job)
+    await db_session.commit()
+    job_id = job.id
+
+    observed_step = None
+
+    async def observing_translate(*args, **kwargs):
+        nonlocal observed_step
+        observed_step = (await _reload(db_engine, job_id)).step
+        return {"file_base64": "x", "status": "done", "word_count": 500}
+
+    monkeypatch.setattr(job_service.translate_client, "translate", observing_translate)
+    workspace_client = AsyncMock()
+    workspace_client.debit.return_value = {"status": "ok"}
+    sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    await job_service._run(job_id, "orig", sessionmaker, workspace_client)
+
+    assert observed_step == "translating"
+
+
+@pytest.mark.anyio
+async def test_run_both_operation_writes_steps_in_actual_execution_order(
+    db_session, db_engine, monkeypatch
+):
+    """The real backend calls flip before translate for "both" -- the
+    mock-era frontend's step order assumed the opposite. Now that the
+    backend's own written step is authoritative, prove it reflects the
+    real order: applying_rtl while flip runs, translating while translate
+    runs, in that sequence."""
+    user = await _make_user(db_session)
+    job = ToolJob(
+        user_id=user.id,
+        operation="both",
+        idempotency_key="k-step-both",
+        input_file_meta={"direction": "rtl", "lang_from": "en", "lang_to": "ar"},
+        status="queued",
+    )
+    db_session.add(job)
+    await db_session.commit()
+    job_id = job.id
+
+    observed_steps: list[str] = []
+
+    async def observing_flip(*args, **kwargs):
+        observed_steps.append((await _reload(db_engine, job_id)).step)
+        return {"file_base64": "flipped", "status": "done"}
+
+    async def observing_translate(*args, **kwargs):
+        observed_steps.append((await _reload(db_engine, job_id)).step)
+        return {"file_base64": "translated", "status": "done", "word_count": 500}
+
+    monkeypatch.setattr(job_service.flip_client, "flip", observing_flip)
+    monkeypatch.setattr(job_service.translate_client, "translate", observing_translate)
+    workspace_client = AsyncMock()
+    workspace_client.debit.return_value = {"status": "ok"}
+    sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    await job_service._run(job_id, "orig", sessionmaker, workspace_client)
+
+    assert observed_steps == ["applying_rtl", "translating"]
+
+
+@pytest.mark.anyio
+async def test_run_writes_quality_check_step_before_debit_call(
+    db_session, db_engine, monkeypatch
+):
+    user = await _make_user(db_session)
+    job = ToolJob(
+        user_id=user.id,
+        operation="flip",
+        idempotency_key="k-step-quality",
+        input_file_meta={"direction": "rtl"},
+        status="queued",
+    )
+    db_session.add(job)
+    await db_session.commit()
+    job_id = job.id
+
+    monkeypatch.setattr(
+        job_service.flip_client,
+        "flip",
+        AsyncMock(return_value={"file_base64": "x", "status": "done"}),
+    )
+    observed_step = None
+
+    workspace_client = AsyncMock()
+
+    async def observing_debit(*args, **kwargs):
+        nonlocal observed_step
+        observed_step = (await _reload(db_engine, job_id)).step
+        return {"status": "ok"}
+
+    workspace_client.debit.side_effect = observing_debit
+    sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    await job_service._run(job_id, "orig", sessionmaker, workspace_client)
+
+    assert observed_step == "quality_check"
+
+
+@pytest.mark.anyio
+async def test_run_upstream_failure_never_reaches_quality_check_step(
+    db_session, db_engine, monkeypatch
+):
+    """The quality_check step implies upstream succeeded -- a job that
+    never gets there (single-op upstream failure) must not claim it did."""
+    user = await _make_user(db_session)
+    job = ToolJob(
+        user_id=user.id,
+        operation="flip",
+        idempotency_key="k-step-fail",
+        input_file_meta={"direction": "rtl"},
+        status="queued",
+    )
+    db_session.add(job)
+    await db_session.commit()
+    job_id = job.id
+
+    monkeypatch.setattr(
+        job_service.flip_client,
+        "flip",
+        AsyncMock(side_effect=RuntimeError("upstream down")),
+    )
+    workspace_client = AsyncMock()
+    sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    await job_service._run(job_id, "orig", sessionmaker, workspace_client)
+
+    reloaded = await _reload(db_engine, job_id)
+    assert reloaded.status == "failed"
+    assert reloaded.step == "applying_rtl"  # last real step reached, untouched
+
+
+@pytest.mark.anyio
 async def test_run_happy_path_flip_computes_cost_and_marks_done(
     db_session, db_engine, monkeypatch
 ):

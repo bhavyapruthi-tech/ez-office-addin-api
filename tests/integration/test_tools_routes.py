@@ -195,6 +195,55 @@ async def test_submit_job_unprovisioned_returns_503_before_balance_check(db_sess
 
 
 @pytest.mark.asyncio
+async def test_poll_job_returns_real_persisted_step_not_hardcoded(db_session):
+    """Code-review finding #9: the route must surface job_service._run's
+    real, persisted step value while non-terminal, not a hardcoded
+    "processing" placeholder for the whole window."""
+    user = User(
+        work_email="d@example.com",
+        ms_oid="oid-4",
+        ez_wallet_id="wallet-1",
+        workspace_account_status="active",
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    raw_token = secrets.token_urlsafe(32)
+    db_session.add(
+        Session(
+            user_id=user.id,
+            token_hash=hashlib.sha256(raw_token.encode()).hexdigest(),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    job = ToolJob(
+        user_id=user.id,
+        operation="translate",
+        idempotency_key=str(uuid.uuid4()),
+        input_file_meta={},
+        status="processing",
+        step="translating",
+    )
+    db_session.add(job)
+    await db_session.flush()
+
+    app = create_app()
+    app.dependency_overrides[get_db] = lambda: iter([db_session])
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            f"/tools/jobs/{job.id}", headers={"Authorization": f"Bearer {raw_token}"}
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "processing"
+    assert body["step"] == "translating"
+
+
+@pytest.mark.asyncio
 async def test_poll_job_expired_but_within_grace_window_still_returns_job(db_session):
     user = User(
         work_email="c@example.com",
