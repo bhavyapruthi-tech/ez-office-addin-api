@@ -5,7 +5,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import respx
+from conftest import override_get_db
 from httpx import ASGITransport, AsyncClient, Response
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.api.deps import get_db
 from app.main import create_app
@@ -15,7 +17,7 @@ from app.models.user import User
 
 
 @pytest.fixture
-async def app_and_token(db_session):
+async def app_and_token(db_session, db_engine):
     user = User(
         work_email="a@example.com",
         ms_oid="oid-1",
@@ -33,10 +35,14 @@ async def app_and_token(db_session):
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
     )
-    await db_session.flush()
+    # commit, not flush: job_service._run's background task opens its own
+    # session from app.state.sessionmaker on a separate connection, which
+    # can't see this row until it's durably committed.
+    await db_session.commit()
 
     app = create_app()
-    app.dependency_overrides[get_db] = lambda: iter([db_session])
+    app.dependency_overrides[get_db] = override_get_db(db_session)
+    app.state.sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
     return app, raw_token, user
 
 
@@ -171,7 +177,7 @@ async def test_submit_job_unprovisioned_returns_503_before_balance_check(db_sess
     await db_session.flush()
 
     app = create_app()
-    app.dependency_overrides[get_db] = lambda: iter([db_session])
+    app.dependency_overrides[get_db] = override_get_db(db_session)
 
     with respx.mock:  # no routes registered -- any Workspace call would raise
         async with AsyncClient(
@@ -228,7 +234,7 @@ async def test_poll_job_returns_real_persisted_step_not_hardcoded(db_session):
     await db_session.flush()
 
     app = create_app()
-    app.dependency_overrides[get_db] = lambda: iter([db_session])
+    app.dependency_overrides[get_db] = override_get_db(db_session)
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -275,7 +281,7 @@ async def test_poll_job_expired_but_within_grace_window_still_returns_job(db_ses
     await db_session.flush()
 
     app = create_app()
-    app.dependency_overrides[get_db] = lambda: iter([db_session])
+    app.dependency_overrides[get_db] = override_get_db(db_session)
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"

@@ -3,6 +3,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import override_get_db
 from httpx import ASGITransport, AsyncClient
 
 from app.api.deps import get_db
@@ -28,7 +29,7 @@ async def app_and_token(db_session):
     await db_session.flush()
 
     app = create_app()
-    app.dependency_overrides[get_db] = lambda: iter([db_session])
+    app.dependency_overrides[get_db] = override_get_db(db_session)
     return app, raw_token
 
 

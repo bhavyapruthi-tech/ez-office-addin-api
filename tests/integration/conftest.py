@@ -44,3 +44,15 @@ async def db_session(db_engine):
     sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
     async with sessionmaker() as session:
         yield session
+
+
+def override_get_db(session):
+    """get_db is an async generator; FastAPI only recognizes the generator
+    protocol on the override callable itself. A plain `lambda: iter([session])`
+    returns that iterator as-is, so `db` ends up bound to the raw iterator
+    instead of the session."""
+
+    async def _override():
+        yield session
+
+    return _override
