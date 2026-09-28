@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class WalletBalanceResponse(BaseModel):
@@ -6,7 +6,7 @@ class WalletBalanceResponse(BaseModel):
 
 
 class TopupRequest(BaseModel):
-    amount_usd: int
+    amount_usd: int = Field(gt=0)
 
 
 class TopupResponse(BaseModel):

@@ -302,7 +302,7 @@ async def test_run_upstream_failure_never_reaches_quality_check_step(
 
     reloaded = await _reload(db_engine, job_id)
     assert reloaded.status == "failed"
-    assert reloaded.step == "applying_rtl"  # last real step reached, untouched
+    assert reloaded.step is None  # terminal -- nulled regardless of failed step
 
 
 @pytest.mark.anyio
@@ -336,6 +336,7 @@ async def test_run_happy_path_flip_computes_cost_and_marks_done(
     assert reloaded.status == "done"
     assert reloaded.credits_cost == job_service.FLIP_COST_CREDITS
     assert reloaded.result_file_url == "flipped-content"
+    assert reloaded.step is None  # terminal -- nulled on success too, not just failure
     workspace_client.debit.assert_awaited_once()
 
 

@@ -212,6 +212,7 @@ async def _run(
             job.status = STATUS_FAILED
             job.error_code = ERROR_CODE_WORKSPACE_UNREACHABLE
             job.completed_at = datetime.now(UTC)
+            job.step = None
             await db.commit()
             return
 
@@ -269,6 +270,9 @@ async def _run(
             job.error_code = ERROR_CODE_WORKSPACE_UNREACHABLE
             job.completed_at = datetime.now(UTC)
 
+        # Terminal either way (done/partial_failed/failed above) -- step is
+        # only meaningful while queued/processing (ToolJob.step docstring).
+        job.step = None
         await db.commit()
 
 
@@ -348,6 +352,7 @@ async def run_stale_job_sweep(
                 else ERROR_CODE_STALE_TIMEOUT
             )
             job.completed_at = datetime.now(UTC)
+            job.step = None
 
         await db.commit()
 

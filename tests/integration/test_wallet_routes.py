@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import secrets
@@ -7,6 +8,7 @@ import pytest
 import respx
 from conftest import override_get_db
 from httpx import ASGITransport, AsyncClient, Response
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from stripe import WebhookSignature
 
 from app.api.deps import get_db
@@ -126,6 +128,20 @@ async def test_topup_creates_payment_intent(app_and_token, monkeypatch):
     assert response.json() == {"client_secret": "pi_secret_123"}
 
 
+@pytest.mark.asyncio
+async def test_topup_rejects_non_positive_amount_returns_422(app_and_token):
+    app, token, _user = app_and_token
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/wallet/topup",
+            json={"amount_usd": 0},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 422
+
+
 @pytest.fixture(autouse=True)
 def stripe_webhook_secret(monkeypatch):
     monkeypatch.setattr(settings, "stripe_webhook_secret", WEBHOOK_SECRET)
@@ -198,3 +214,50 @@ async def test_webhook_route_redelivery_returns_200_no_second_credit(db_session)
 
     assert response.status_code == 200
     assert credit_route.call_count == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_webhook_route_concurrent_same_event_only_credits_once(db_engine):
+    """Two truly concurrent deliveries of the same new event -- each with
+    its own DB session/connection, like two real concurrent requests would
+    have. The dedup check-then-insert isn't atomic, so one request's insert
+    can lose the unique-constraint race: it must come back as a clean 502
+    (Stripe retries) rather than corrupting state, and the credit must
+    still only ever land once."""
+    credit_route = respx.post("https://workspace.invalid/wallet/wallet-1/credit").mock(
+        return_value=Response(200, json={"credit_balance": 150, "status": "ok"})
+    )
+    sessionmaker = async_sessionmaker(db_engine, expire_on_commit=False)
+    session_a = sessionmaker()
+    session_b = sessionmaker()
+
+    app_a = create_app()
+    app_a.dependency_overrides[get_db] = override_get_db(session_a)
+    app_b = create_app()
+    app_b.dependency_overrides[get_db] = override_get_db(session_b)
+
+    payload, sig = _signed_payload("evt_concurrent")
+    headers = {"stripe-signature": sig, "content-type": "application/json"}
+
+    async def _post(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            return await client.post(
+                "/webhooks/stripe", content=payload, headers=headers
+            )
+
+    try:
+        responses = await asyncio.gather(_post(app_a), _post(app_b))
+    finally:
+        await session_a.close()
+        await session_b.close()
+
+    statuses = sorted(r.status_code for r in responses)
+    assert statuses == [200, 502]
+    assert credit_route.call_count == 1
+
+    async with sessionmaker() as verify_session:
+        record = await verify_session.get(StripeWebhookEvent, "evt_concurrent")
+        assert record.credited is True
