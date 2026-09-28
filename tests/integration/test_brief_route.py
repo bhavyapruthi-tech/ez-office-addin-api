@@ -8,8 +8,10 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api.deps import get_db
 from app.main import create_app
+from app.models.brief import Brief
 from app.models.session import Session
 from app.models.user import User
+from app.services import brief_service
 
 
 @pytest.fixture
@@ -72,3 +74,39 @@ async def test_submit_brief_missing_division_returns_422(app_and_token):
     body = response.json()
     assert body["error_code"] == "validation_error"
     assert isinstance(body["message"], str) and body["message"]
+
+
+@pytest.mark.asyncio
+async def test_create_brief_retries_on_ref_number_collision(db_session, monkeypatch):
+    user = User(work_email="collision@example.com", ms_oid="oid-collision")
+    db_session.add(user)
+    await db_session.flush()
+
+    existing = Brief(
+        user_id=user.id,
+        division="intelligence",
+        capability=None,
+        output_format=None,
+        deadline=None,
+        notes=None,
+        upsells=[],
+        ref_number="EZ-1234",
+    )
+    db_session.add(existing)
+    await db_session.commit()
+
+    ref_values = iter(["EZ-1234", "EZ-5678"])  # first collides, second is free
+    monkeypatch.setattr(brief_service, "generate_ref", lambda: next(ref_values))
+
+    brief = await brief_service.create_brief(
+        db_session,
+        user_id=user.id,
+        division="intelligence",
+        capability=None,
+        output_format=None,
+        deadline=None,
+        notes=None,
+        upsells=[],
+    )
+
+    assert brief.ref_number == "EZ-5678"
