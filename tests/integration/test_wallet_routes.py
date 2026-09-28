@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import respx
+from conftest import override_get_db
 from httpx import ASGITransport, AsyncClient, Response
 from stripe import WebhookSignature
 
@@ -54,7 +55,7 @@ async def app_and_token(db_session):
     await db_session.flush()
 
     app = create_app()
-    app.dependency_overrides[get_db] = lambda: iter([db_session])
+    app.dependency_overrides[get_db] = override_get_db(db_session)
     return app, raw_token, user
 
 
@@ -91,7 +92,7 @@ async def test_get_wallet_unprovisioned_returns_503_no_workspace_call(db_session
     await db_session.flush()
 
     app = create_app()
-    app.dependency_overrides[get_db] = lambda: iter([db_session])
+    app.dependency_overrides[get_db] = override_get_db(db_session)
 
     with respx.mock:  # no routes registered -- any call would raise
         async with AsyncClient(
@@ -137,7 +138,7 @@ async def test_webhook_route_valid_unseen_event_credits_and_returns_200(db_sessi
         return_value=Response(200, json={"credit_balance": 150, "status": "ok"})
     )
     app = create_app()
-    app.dependency_overrides[get_db] = lambda: iter([db_session])
+    app.dependency_overrides[get_db] = override_get_db(db_session)
     payload, sig = _signed_payload("evt_route_1")
 
     async with AsyncClient(
@@ -157,7 +158,7 @@ async def test_webhook_route_valid_unseen_event_credits_and_returns_200(db_sessi
 @pytest.mark.asyncio
 async def test_webhook_route_invalid_signature_returns_400(db_session):
     app = create_app()
-    app.dependency_overrides[get_db] = lambda: iter([db_session])
+    app.dependency_overrides[get_db] = override_get_db(db_session)
     payload, _sig = _signed_payload("evt_route_bad")
 
     async with AsyncClient(
@@ -183,7 +184,7 @@ async def test_webhook_route_redelivery_returns_200_no_second_credit(db_session)
 
     credit_route = respx.post("https://workspace.invalid/wallet/wallet-1/credit")
     app = create_app()
-    app.dependency_overrides[get_db] = lambda: iter([db_session])
+    app.dependency_overrides[get_db] = override_get_db(db_session)
     payload, sig = _signed_payload("evt_route_dup")
 
     async with AsyncClient(

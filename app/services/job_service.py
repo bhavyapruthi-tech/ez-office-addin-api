@@ -13,6 +13,10 @@ from app.models.tool_job import (
     ERROR_CODE_INSUFFICIENT_BALANCE_AFTER_SPEND,
     ERROR_CODE_STALE_TIMEOUT,
     ERROR_CODE_WORKSPACE_UNREACHABLE,
+    JOB_STEP_APPLYING_RTL,
+    JOB_STEP_QUALITY_CHECK,
+    JOB_STEP_RECEIVED,
+    JOB_STEP_TRANSLATING,
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_PARTIAL_FAILED,
@@ -101,6 +105,7 @@ async def get_or_create_job(
         input_file_meta=input_file_meta,
         expert_review_requested=expert_review_requested,
         status=STATUS_QUEUED,
+        step=JOB_STEP_RECEIVED,
     )
     db.add(job)
     try:
@@ -116,6 +121,20 @@ async def get_or_create_job(
         return job, False
 
     return job, True
+
+
+async def _write_step(
+    job_id: Any, step: str, sessionmaker: async_sessionmaker[AsyncSession]
+) -> None:
+    """A quick, separate open/write/close per step -- Phase 2 deliberately
+    holds no session across the slow upstream calls, so each progress
+    write gets its own short-lived one instead."""
+    async with sessionmaker() as db:
+        job = await db.get(ToolJob, job_id)
+        if job is None:
+            return
+        job.step = step
+        await db.commit()
 
 
 async def _run(
@@ -139,6 +158,13 @@ async def _run(
         user = await db.get(User, job.user_id)
         wallet_id = user.ez_wallet_id if user else None
 
+        # Code-review finding #9: status now actually advances past queued
+        # while the job is being worked, instead of jumping straight from
+        # queued to a terminal status with no visible in-between state.
+        job.status = STATUS_PROCESSING
+        job.step = JOB_STEP_RECEIVED
+        await db.commit()
+
     # Phase 2: call upstream (no open DB session held across this).
     flip_result: dict[str, Any] | None = None
     translate_result: dict[str, Any] | None = None
@@ -146,6 +172,7 @@ async def _run(
     translate_failed = False
 
     if operation in ("flip", "both"):
+        await _write_step(job_id, JOB_STEP_APPLYING_RTL, sessionmaker)
         try:
             flip_result = await flip_client.flip(file_base64, direction)
             file_base64 = flip_result.get("file_base64", file_base64)
@@ -154,6 +181,7 @@ async def _run(
             flip_failed = True
 
     if operation in ("translate", "both"):
+        await _write_step(job_id, JOB_STEP_TRANSLATING, sessionmaker)
         try:
             translate_result = await translate_client.translate(
                 file_base64, lang_from or "en", lang_to or "ar"
@@ -207,6 +235,9 @@ async def _run(
                 if translate_result
                 else (flip_result.get("file_base64") if flip_result else None)
             )
+
+        job.step = JOB_STEP_QUALITY_CHECK
+        await db.commit()
 
         debit_result: dict[str, Any] = {"status": "workspace_unreachable"}
         try:

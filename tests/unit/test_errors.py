@@ -117,3 +117,25 @@ async def test_cors_allows_configured_origin_and_blocks_others():
         allowed.headers.get("access-control-allow-origin") == "https://localhost:3000"
     )
     assert "access-control-allow-origin" not in blocked.headers
+
+
+@pytest.mark.anyio
+async def test_cors_allows_private_network_preflight():
+    """Office Web hosts the add-in in a sandboxed iframe, which Chrome's
+    Private Network Access policy treats as public -- every fetch to this
+    backend, even localhost-to-localhost during dev, arrives with this
+    preflight header and must not be rejected."""
+    app = _test_app()
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.options(
+            "/auth/session",
+            headers={
+                "Origin": "https://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Private-Network": "true",
+            },
+        )
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-private-network") == "true"

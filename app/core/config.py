@@ -20,7 +20,16 @@ class Settings(BaseSettings):
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
 
-    addin_origins: list[str] = ["https://localhost:3000"]
+    # ngrok-free.dev entry: Office Web needs the taskpane served over a
+    # public origin (both to satisfy Chrome's Private Network Access check
+    # and because desktop Office here predates SharedRuntime support), so
+    # the dev-server is tunneled through the account's one reserved
+    # ngrok-free.dev domain for that path. Kept alongside localhost:3000
+    # for direct desktop testing once Office is updated.
+    addin_origins: list[str] = [
+        "https://localhost:3000",
+        "https://gurgling-outdoors-bullpen.ngrok-free.dev",
+    ]
 
     # KD6: poll-timeout ceiling and recurring sweep interval.
     poll_timeout_ceiling_seconds: int = 600

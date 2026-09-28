@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import respx
+from conftest import override_get_db
 from httpx import ASGITransport, AsyncClient, Response
 
 from app.api.deps import get_db
@@ -22,7 +23,7 @@ def app_with_test_db(db_session, monkeypatch, rsa_keypair):
     monkeypatch.setattr(settings, "entra_client_id", "test-client-id")
 
     app = create_app()
-    app.dependency_overrides[get_db] = lambda: iter([db_session])
+    app.dependency_overrides[get_db] = override_get_db(db_session)
     return app
 
 

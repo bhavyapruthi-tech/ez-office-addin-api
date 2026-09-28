@@ -38,7 +38,7 @@ async def test_duplicate_stripe_event_id_raises_pk_violation_update_does_not(
 ):
     event = StripeWebhookEvent(event_id="evt_123", credited=False)
     db_session.add(event)
-    await db_session.flush()
+    await db_session.commit()
 
     db_session.add(StripeWebhookEvent(event_id="evt_123", credited=False))
     with pytest.raises(IntegrityError):

@@ -81,7 +81,9 @@ async def get_job(
     if job is None or job.user_id != user.id:
         raise NotFoundError()
 
-    step = "processing" if job.status in ("queued", "processing") else None
+    # Code-review finding #9: the real, persisted step value, not a
+    # hardcoded placeholder -- see job_service._run's phase transitions.
+    step = job.step if job.status in ("queued", "processing") else None
 
     return PollJobResponse(
         status=job.status,  # type: ignore[arg-type]

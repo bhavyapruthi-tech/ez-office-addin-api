@@ -38,12 +38,21 @@ def create_app() -> FastAPI:
 
     # R18/KD13: explicit non-wildcard allow-list, never allow_origins=["*"],
     # since every route below returns bearer-authenticated data.
+    #
+    # allow_private_network=True: Office Web hosts the add-in in a sandboxed
+    # iframe, which Chrome's Private Network Access policy treats as public
+    # (an opaque-origin iframe loses its "local" classification), so every
+    # fetch to this backend -- even from localhost to localhost during dev --
+    # arrives with Access-Control-Request-Private-Network and gets rejected
+    # unless this is set. Desktop Office doesn't go through Chrome at all and
+    # is unaffected either way.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.addin_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        allow_private_network=True,
     )
 
     register_exception_handlers(app)

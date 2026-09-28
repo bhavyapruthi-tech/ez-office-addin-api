@@ -28,6 +28,15 @@ ERROR_CODE_WORKSPACE_UNREACHABLE = "workspace_unreachable"
 ERROR_CODE_STALE_TIMEOUT = "stale_timeout"
 ERROR_CODE_DEBIT_SUCCEEDED_STATUS_WRITE_FAILED = "debit_succeeded_status_write_failed"
 
+# Code-review finding #9: ARCHITECTURE.md sec5.3 documents these four values
+# for `step` while `status` is queued/processing; _run() now actually
+# writes them at each phase transition instead of the route hardcoding
+# "processing" for the whole non-terminal window.
+JOB_STEP_RECEIVED = "received"
+JOB_STEP_TRANSLATING = "translating"
+JOB_STEP_APPLYING_RTL = "applying_rtl"
+JOB_STEP_QUALITY_CHECK = "quality_check"
+
 
 class ToolJob(Base):
     __tablename__ = "tool_jobs"
@@ -47,6 +56,9 @@ class ToolJob(Base):
     )  # queued | processing | done | partial_failed | failed
     failed_operation: Mapped[str | None] = mapped_column(String)  # flip | translate
     error_code: Mapped[str | None] = mapped_column(String)
+    # received | translating | applying_rtl | quality_check -- meaningful only
+    # while status is queued/processing; the route nulls it out once terminal.
+    step: Mapped[str | None] = mapped_column(String)
 
     # KD3: UUID-formatted, length-capped at the Pydantic schema layer (U5).
     idempotency_key: Mapped[str] = mapped_column(String)
