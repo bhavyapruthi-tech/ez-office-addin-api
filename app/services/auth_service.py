@@ -25,12 +25,21 @@ _jwks_client = PyJWKClient(_JWKS_URL, cache_keys=True)
 SESSION_TTL = timedelta(hours=12)
 
 
-def validate_entra_token(token: str) -> dict[str, Any]:
+def validate_entra_token(
+    token: str, *, expected_audience: str | None = None
+) -> dict[str, Any]:
     """KTD2/KTD3: one generic validator for both the NAA and legacy-SSO
     flows. Hardcodes RS256 rather than trusting the token's own `alg`
     header (algorithm-confusion defense). Rejects a token from an
     unexpected tenant before any OBO exchange is attempted -- this
     backend is single-tenant by design.
+
+    `expected_audience` defaults to the bare client ID (the incoming
+    NAA/legacy-SSO token's own audience). The legacy path's second call,
+    re-validating the freshly OBO-exchanged token, must pass the
+    `api://{client_id}` resource URI instead -- that token's `aud` is the
+    exposed API's resource identifier, not the bare client ID, since
+    exchange_obo requests it against that scope.
     """
     try:
         signing_key = _jwks_client.get_signing_key_from_jwt(token)
@@ -38,7 +47,7 @@ def validate_entra_token(token: str) -> dict[str, Any]:
             token,
             signing_key.key,
             algorithms=["RS256"],
-            audience=settings.entra_client_id,
+            audience=expected_audience or settings.entra_client_id,
             issuer=f"https://login.microsoftonline.com/{settings.entra_tenant_id}/v2.0",
         )
     except jwt.PyJWTError as exc:
@@ -86,7 +95,9 @@ async def handle_auth_session(
 
     if auth_mode == "legacy":
         access_token = exchange_obo(token, claims)
-        claims = validate_entra_token(access_token)
+        claims = validate_entra_token(
+            access_token, expected_audience=f"api://{settings.entra_client_id}"
+        )
 
     ms_oid = claims["oid"]
     work_email = claims.get("preferred_username") or claims.get("email") or ""

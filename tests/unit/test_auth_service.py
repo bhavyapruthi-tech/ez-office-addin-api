@@ -85,6 +85,44 @@ def test_exchange_obo_failure_raises_unauthorized(monkeypatch, make_entra_token)
 
 
 @pytest.mark.anyio
+async def test_handle_auth_session_legacy_mode_succeeds(
+    monkeypatch, make_entra_token, db_session
+):
+    """Regression: exchange_obo requests the OBO token against scope
+    api://{client_id}/access_as_user, so its aud claim is api://{client_id}
+    -- re-validating it against the bare client ID (the incoming token's
+    own audience) always failed. Legacy mode had zero test coverage, which
+    is exactly how this shipped unnoticed."""
+    from app.core.config import settings
+
+    incoming_token = make_entra_token()
+    obo_token = make_entra_token(aud=f"api://{settings.entra_client_id}")
+
+    _FakeConfidentialClientApplication.acquire_token_on_behalf_of = (
+        lambda self, user_assertion, scopes: {"access_token": obo_token}
+    )
+    monkeypatch.setattr(
+        "app.services.auth_service.msal.ConfidentialClientApplication",
+        _FakeConfidentialClientApplication,
+    )
+
+    workspace_client = AsyncMock()
+    workspace_client.lookup_or_login_or_create.return_value = {
+        "workspace_account_id": "wsacct-1",
+        "wallet_id": "wallet-1",
+        "credit_balance": 0,
+        "status": "created",
+    }
+
+    user, raw_token = await auth_service.handle_auth_session(
+        incoming_token, "legacy", db_session, workspace_client
+    )
+
+    assert raw_token
+    assert user.workspace_account_status == "active"
+
+
+@pytest.mark.anyio
 async def test_handle_auth_session_first_use_provisions_workspace(
     make_entra_token, db_session
 ):
