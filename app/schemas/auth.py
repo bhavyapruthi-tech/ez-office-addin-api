@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 class AuthSessionRequest(BaseModel):
     token: str
-    auth_mode: Literal["naa", "legacy"]
+    auth_mode: Literal["naa", "legacy", "dev"]
 
 
 class AuthUser(BaseModel):

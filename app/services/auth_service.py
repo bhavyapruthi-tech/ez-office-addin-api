@@ -59,6 +59,24 @@ def validate_entra_token(
     return claims
 
 
+def validate_dev_token(token: str) -> dict[str, Any]:
+    """auth_mode="dev": bypasses Entra/JWKS entirely. Disabled unless
+    settings.dev_auth_token is set; the configured value must match exactly
+    (constant-time compare -- this is a shared-secret check, not a JWT).
+    Fixed `oid` so every dev login upserts the same one users row, still
+    exercising the real Workspace/Flip/Translate calls downstream.
+    """
+    if not settings.dev_auth_token or not secrets.compare_digest(
+        token, settings.dev_auth_token
+    ):
+        raise UnauthorizedError("Dev auth token invalid or dev auth mode disabled.")
+    return {
+        "oid": "dev-oid",
+        "tid": settings.entra_tenant_id,
+        "preferred_username": "dev@ez.local",
+    }
+
+
 def exchange_obo(token: str, claims: dict[str, Any]) -> str:
     """KTD3: authority is built from the incoming token's own `tid` claim
     -- never `/common` or `/organizations`, a documented multi-tenant OBO
@@ -91,13 +109,15 @@ async def handle_auth_session(
     every call until the user's status is "active", per R4/KD4).
     Returns (user, raw_session_token).
     """
-    claims = validate_entra_token(token)
-
-    if auth_mode == "legacy":
-        access_token = exchange_obo(token, claims)
-        claims = validate_entra_token(
-            access_token, expected_audience=f"api://{settings.entra_client_id}"
-        )
+    if auth_mode == "dev":
+        claims = validate_dev_token(token)
+    else:
+        claims = validate_entra_token(token)
+        if auth_mode == "legacy":
+            access_token = exchange_obo(token, claims)
+            claims = validate_entra_token(
+                access_token, expected_audience=f"api://{settings.entra_client_id}"
+            )
 
     ms_oid = claims["oid"]
     work_email = claims.get("preferred_username") or claims.get("email") or ""

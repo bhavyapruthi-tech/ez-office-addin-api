@@ -10,6 +10,12 @@ class Settings(BaseSettings):
     entra_client_id: str = ""
     entra_client_secret: str = ""
 
+    # Dev-only auth bypass (auth_mode="dev") -- lets Wallet/Flip/Translate be
+    # exercised against a real Office client without a real Entra ID app
+    # registration (PENDING.md). Empty (default) disables the mode entirely;
+    # every "dev" attempt is rejected regardless of the token supplied.
+    dev_auth_token: str = ""
+
     workspace_api_base: str = "https://workspace.invalid"
     workspace_api_key: str = ""
     flip_api_base: str = "https://flip.invalid"

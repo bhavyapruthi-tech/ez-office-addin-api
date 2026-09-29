@@ -123,6 +123,57 @@ async def test_handle_auth_session_legacy_mode_succeeds(
 
 
 @pytest.mark.anyio
+async def test_handle_auth_session_dev_mode_succeeds_with_correct_token(
+    monkeypatch, db_session
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "dev_auth_token", "test-dev-secret")
+
+    workspace_client = AsyncMock()
+    workspace_client.lookup_or_login_or_create.return_value = {
+        "workspace_account_id": "wsacct-dev",
+        "wallet_id": "wallet-dev",
+        "credit_balance": 0,
+        "status": "created",
+    }
+
+    user, raw_token = await auth_service.handle_auth_session(
+        "test-dev-secret", "dev", db_session, workspace_client
+    )
+
+    assert raw_token
+    assert user.ms_oid == "dev-oid"
+    assert user.workspace_account_status == "active"
+
+
+@pytest.mark.anyio
+async def test_handle_auth_session_dev_mode_rejects_wrong_token(
+    monkeypatch, db_session
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "dev_auth_token", "test-dev-secret")
+
+    with pytest.raises(UnauthorizedError):
+        await auth_service.handle_auth_session(
+            "wrong-token", "dev", db_session, AsyncMock()
+        )
+
+
+@pytest.mark.anyio
+async def test_handle_auth_session_dev_mode_disabled_by_default(
+    monkeypatch, db_session
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "dev_auth_token", "")
+
+    with pytest.raises(UnauthorizedError):
+        await auth_service.handle_auth_session("", "dev", db_session, AsyncMock())
+
+
+@pytest.mark.anyio
 async def test_handle_auth_session_first_use_provisions_workspace(
     make_entra_token, db_session
 ):
